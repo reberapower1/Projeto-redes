@@ -1,13 +1,29 @@
+import sys
 import paho.mqtt.client as mqtt
 import json
-from influxdb_client import InfluxDBClient
+from datetime import datetime
+from influxdb_client_3 import InfluxDBClient3, Point 
+
+GROUP_ID = sys.argv[1]
+
+# ============================
+# Definições do MQTT 
+# ============================
+MQTT_BROKER = "localhost"  
+MQTT_PORT = 1883  
+
+# Tópicos MQTT 
+TOPIC_MACHINE = f"v3/{GROUP_ID}@ttn/devices/+/up"
 
 # Configurações
-GROUP_ID = "SEU_GROUP_ID"
-INFLUXDB_URL = "https://us-west-2-1.aws.cloud2.influxdata.com"
-INFLUXDB_TOKEN = "seu_token"
-INFLUXDB_ORG = "seu_org"
-INFLUXDB_BUCKET = "seu_bucket"
+GROUP_ID = "7"
+token =  "ifB8rGv5s_u6Wc_q4JmZGE8zQMba_8u-UfLLvTKeBMuofI3lrhaSH73m_QHFZhFmceiegWY6BohE0Cw49AaWBg=="
+org = "Projetos Redes"                    
+host = "https://eu-central-1-1.aws.cloud2.influxdata.com"  
+database = "machines"    
+
+# Inicializa o cliente InfluxDB
+influx_client = InfluxDBClient3(host=host, token=token, database=database, org=org)
 
 MACHINE_ID_TO_CODE = {
     "M1": "A23X",
@@ -129,51 +145,104 @@ def convert_to_a23x_units(machine_code, sensor_data):
     
     return converted_data
 
-def on_message(client, userdata, msg):
-    try{
-        data = json.loads(msg.payload)
-        print(f"Dados brutos recebidos: {data}")
-
-        # Extrai o machine_id (ex: "M1")
-        machine_id = data["end_device_ids"]["machine_id"]
-
-        # Obtém o machine_code correspondente (ex: "A23X")
-        machine_code = MACHINE_ID_TO_CODE.get(machine_id)
-
-        if not machine_code:
-            print(f"Erro: Machine ID {machine_id} não mapeado para nenhum código conhecido")
-            return
-
-        print(f"Machine ID: {machine_id} → Código: {machine_code}")
-    
-        # Extrai os dados dos sensores
-        sensor_data = data["uplink_message"]["decoded_payload"]
+def send_to_influx(machine_data):
+    """Versão otimizada para integrar com seu fluxo atual"""
+    try:
+        # Cria todos os pontos
+        points = []
         
-        # Processar e padronizar dados (ex: converter unidades)
-        processed_data = {
-            "measurement": "machine_data",
-            "tags": {"machine_id": data["end_device_ids"]["machine_id"]},
-            "fields": {
-                "rpm": data["uplink_message"]["decoded_payload"]["rpm"],
-                "temp": data["uplink_message"]["decoded_payload"]["coolant_temperature"],
-                "oil_pressure": data["uplink_message"]["decoded_payload"]["oil_pressure"],
-            }
+        # Dados dos sensores 
+        sensor_point = Point("machine_metrics") \
+        .tag("machine_id", machine_data['machine_id']) \
+        .tag("machine_code", machine_data['machine_code']) \
+        .field("rpm", float(machine_data['rpm'])) \
+        .field("oil_pressure_psi", machine_data['oil_pressure']) \
+        .field("coolant_temp_c", machine_data['coolant_temp']) \
+        .field("battery_potential_v", machine_data['battery_potential']) \
+        .field("consumption_lh", machine_data['consumption']) \
+        .time(datetime.now())
+
+        
+        # Dados da rede
+        signal_point = Point("network_metrics") \
+            .tag("machine_id", machine_data['machine_id']) \
+            .field("rssi", machine_data['rssi']) \
+            .field("snr", machine_data['snr']) \
+            .field("channel_rssi", machine_data.get('channel_rssi', -100)) \
+            .time(datetime.now())
+        points.append(signal_point)
+        
+        influx_client.write(points)
+        
+        print(f"Dados da máquina {machine_data['machine_id']} enviados para a base de dados")
+        return True
+        
+    except Exception as e:
+        print(f"Erro ao enviar dados: {str(e)}")
+        return False
+
+# ============================
+# Funções MQTT 
+# ============================
+def on_connect(client, userdata, flags, rc, properties=None):
+    print(f"Ligao ao broker MQTT com o código {rc}")
+    client.subscribe(TOPIC_MACHINE)
+    print(f"Subscrito ao tópico: v3/{GROUP_ID}@ttn/devices/+/up")
+
+def on_message(client, userdata, msg):
+    try:
+        data = json.loads(msg.payload.decode())
+        machine_id = data["end_device_ids"]["machine_id"]
+        machine_code = MACHINE_ID_TO_CODE.get(machine_id)
+        
+        if not machine_code:
+            print(f"Erro: Machine ID {machine_id} não encontrado")
+            return
+        
+        print("recebi dados da máquina", machine_id)
+
+        sensor_data = data["uplink_message"]["decoded_payload"]
+        standardized_data = convert_to_a23x_units(machine_code, sensor_data)
+        
+        influx_payload = {
+            'machine_id': machine_id,
+            'machine_code': machine_code,
+            'rpm': standardized_data["rpm"],
+            'oil_pressure': standardized_data["oil_pressure"],
+            'coolant_temp': standardized_data["coolant_temp"],
+            'battery_potential': standardized_data["battery_potential"],
+            'consumption': standardized_data["consumption"],
+            'rssi': data["uplink_message"]["rx_metadata"][0]["rssi"],
+            'snr': data["uplink_message"]["rx_metadata"][0]["snr"],
+            'channel_rssi': data["uplink_message"]["rx_metadata"][0].get("channel_rssi", -100)
         }
+
+        if not send_to_influx(influx_payload):
+            print("Falha ao enviar dados para InfluxDB")
+            
     except Exception as e:
         print(f"Erro ao processar mensagem: {e}")
-}
     
-    # Salvar no InfluxDB
-    with InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG) as client_db:
-        write_api = client_db.write_api()
-        write_api.write(INFLUXDB_BUCKET, INFLUXDB_ORG, processed_data)
-
 def main():
-    client = mqtt.Client()
-    client.on_message = on_message
-    client.connect("10.6.1.9", 1883, 60)
-    client.subscribe(f"v3/{GROUP_ID}@ttn/devices/+/up")
-    client.loop_forever()
+    mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    mqtt_client.on_connect=on_connect
+    mqtt_client.on_message = on_message
+    
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        print(f"Ligado ao broker na porta {MQTT_BROKER}:{MQTT_PORT}...")
+    except Exception as e:
+        print(f"Falha na ligação MQTT: {e}")
+        sys.exit(1)
+
+    mqtt_client.loop_start
+    
+    try:
+        mqtt_client.loop_forever()
+    except KeyboardInterrupt:
+        print("\nExecução interrompida...")
+    finally:
+        mqtt_client.disconnect()
 
 if __name__ == "__main__":
     main()
