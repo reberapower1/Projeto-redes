@@ -9,7 +9,7 @@ GROUP_ID = sys.argv[1]
 # ============================
 # Definições do MQTT 
 # ============================
-MQTT_BROKER = "localhost"  
+MQTT_BROKER = "10.6.1.9"  
 MQTT_PORT = 1883  
 
 # Tópicos MQTT 
@@ -21,6 +21,8 @@ TOPIC_MACHINE_5 = f"v3/{GROUP_ID}@ttn/devices/M5/up"
 TOPIC_MACHINE_6 = f"v3/{GROUP_ID}@ttn/devices/M6/up"
 TOPIC_MACHINE_7 = f"v3/{GROUP_ID}@ttn/devices/M7/up"
 TOPIC_MACHINE_8 = f"v3/{GROUP_ID}@ttn/devices/M8/up"
+TOPIC_TO_MACHINE_MANAGER = f"{GROUP_ID}/machine_data"
+
 
 # Configurações
 token =  "ifB8rGv5s_u6Wc_q4JmZGE8zQMba_8u-UfLLvTKeBMuofI3lrhaSH73m_QHFZhFmceiegWY6BohE0Cw49AaWBg=="
@@ -123,34 +125,38 @@ def convert_to_a23x_units(machine_code, sensor_data):
     
     # Conversão de pressão do óleo para psi (unidade da A23X)
     oil_pressure = sensor_data.get("oil_pressure", 0)
-    if source_units.get("oil_pressure") == "bar":
+    if source_units.get("oil_pressure_unit") == "bar":
         converted_data["oil_pressure"] = oil_pressure * CONVERSION_FACTORS["bar_to_psi"]
     else:
         converted_data["oil_pressure"] = oil_pressure
+
     
     # Conversão de temperatura para °C 
     coolant_temp = sensor_data.get("coolant_temperature", 0)
-    if machine_code in ["E34V", "F78T", "G92Q", "H65P"]:  # Máquinas que usam °F
+    if source_units.get("coolant_temp_unit") == "°F":
         converted_data["coolant_temp"] = CONVERSION_FACTORS["f_to_c"](coolant_temp)
     else:
         converted_data["coolant_temp"] = coolant_temp
     
     # Conversão de potencial da bateria para V 
     battery_potential = sensor_data.get("battery_potential", 0)
-    if machine_code == "H65P":  # Única máquina que usa mV
+    if source_units.get("battery_potential_unit") == "mV":
         converted_data["battery_potential"] = battery_potential * CONVERSION_FACTORS["mv_to_v"]
     else:
         converted_data["battery_potential"] = battery_potential
     
     # Conversão de consumo para l/h 
     consumption = sensor_data.get("consumption", 0)
-    if machine_code in ["B47Y", "C89Z", "E34V", "H65P"]:  # Máquinas que usam gal/h
+    if source_units.get("consumption_unit") == "gal/h":
         converted_data["consumption"] = consumption * CONVERSION_FACTORS["gal_to_l"]
     else:
         converted_data["consumption"] = consumption
     
     return converted_data
 
+#==================
+#Função para enviar os dados para a base de dados Influx
+# #================
 def send_to_influx(machine_data):
     try:
         # Cria todos os pontos
@@ -186,6 +192,80 @@ def send_to_influx(machine_data):
     except Exception as e:
         print(f"Erro ao enviar dados: {str(e)}")
         return False
+
+#===============
+#Função para enviar os dados para o machine manager agent
+#===============
+def send_to_machine_data_manager(client, machine_data):
+    try:
+        topic = TOPIC_TO_MACHINE_MANAGER  
+        payload = {
+            "group_id": GROUP_ID,
+            "machine_id": machine_data["machine_id"],
+            "machine_code": machine_data["machine_code"],
+            "rpm": machine_data["rpm"],
+            "oil_pressure": machine_data["oil_pressure"],
+            "coolant_temp": machine_data["coolant_temp"],
+            "battery_potential": machine_data["battery_potential"],
+            "consumption": machine_data["consumption"],
+            "rssi": machine_data["rssi"],
+            "snr": machine_data["snr"],
+            "channel_rssi": machine_data["channel_rssi"],
+            "timestamp": datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+        } 
+        client.publish(topic, json.dumps(payload), qos=1)
+        print(f"Dados enviados para o Machine Data Manager via tópico: {topic}")
+    except Exception as e:
+        print(f"Erro ao enviar para o Machine Data Manager: {e}")
+
+def send_machine_command(client, machine_id, command_type, parameter, value):
+    try:
+        PARAMETER_BYTES = {
+            "rpm": 0x01,
+            "coolant_temperature": 0x02,
+            "oil_pressure": 0x03,
+            "battery_potential":0x04,
+            "consumption":0x05
+        }
+
+        if command_type == "control":
+            message_type = 0x01
+            action_type = 0x01  # "Modify Parameter"
+            parameter_byte = PARAMETER_BYTES.get(parameter, 0x01)
+            adjustment_byte = value if isinstance(value, int) else int(value)  # Valor assinado (-128 a +127)
+            payload_bytes = [message_type, action_type, parameter_byte, adjustment_byte]
+        
+        elif command_type == "alert":
+            message_type = 0x02
+            action_type = 0x01  # "Stop Machine"
+            reason_byte = value if isinstance(value, int) else int(value)  # Código de razão
+            payload_bytes = [message_type, action_type, reason_byte]
+        
+        else:
+            raise ValueError("Tipo de comando inválido. Use 'control' ou 'alert'.")
+
+        # Converte os bytes para uma string hex (ex: "0x01 0x01 0x01 0xFA")
+        hex_payload = " ".join([f"0x{b:02X}" for b in payload_bytes])
+
+        # Estrutura da mensagem LoRaWAN
+        downlink_msg = {
+            "downlinks": [{
+                "frm_payload": hex_payload,
+                "f_port": 10, 
+                "priority": "NORMAL"
+            }]
+        }
+
+        # Publica no tópico correto
+        topic = f"v3/{GROUP_ID}@ttn/devices/{machine_id}/down/push_machine"
+        if command_type == "alert":
+            topic = f"v3/{GROUP_ID}@ttn/devices/{machine_id}/down/push_alert"
+
+        client.publish(topic, json.dumps(downlink_msg))
+        print(f"Comando {command_type} enviado para {machine_id}: {hex_payload}")
+
+    except Exception as e:
+        print(f"Erro ao enviar comando para a máquina: {e}")
 
 # ============================
 # Funções MQTT 
@@ -236,11 +316,13 @@ def on_message(client, userdata, msg):
 
         if not send_to_influx(influx_payload):
             print("Falha ao enviar dados para InfluxDB")
-            
+        # Enviar para o Machine Data Manager
+        send_to_machine_data_manager(mqtt_client, influx_payload)
     except Exception as e:
         print(f"Erro ao processar mensagem: {e}")
     
 def main():
+    global mqtt_client
     mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     mqtt_client.on_connect=on_connect
     mqtt_client.on_message = on_message

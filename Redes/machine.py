@@ -29,7 +29,7 @@ MACHINE_ID = CODE_TO_ID.get(MACHINE_CODE)
 # ============================
 # Definições do MQTT 
 # ============================
-MQTT_BROKER = "localhost"  
+MQTT_BROKER = "10.6.1.9"  
 MQTT_PORT = 1883           
 
 # Tópicos MQTT 
@@ -112,11 +112,11 @@ def init_sensor_values(machine_code):
     config = MACHINE_CONFIG[machine_code]
     
     # Valores base nas respetivas unidades de medidas
-    rpm = 1100
-    coolant_temp = 90.0 if config["coolant_temp_unit"] == "°C" else 194.0  # 90°C = 194°F
-    oil_pressure = 3.0 if config["oil_pressure_unit"] == "bar" else 3.0 * BAR_TO_PSI
-    battery_potential = 12.6 if config["battery_potential_unit"] == "V" else 12.6 * V_TO_MV
-    consumption = 15.0 if config["consumption_unit"] == "l/h" else 15.0 * L_TO_GAL
+    rpm = 2000
+    coolant_temp = 100.0 if config["coolant_temp_unit"] == "°C" else 194.0  # 90°C = 194°F
+    oil_pressure = 6.89 if config["oil_pressure_unit"] == "bar" else 3.0 * BAR_TO_PSI
+    battery_potential = 13 if config["battery_potential_unit"] == "V" else 12.6 * V_TO_MV
+    consumption = 30 if config["consumption_unit"] == "l/h" else 15.0 * L_TO_GAL
     
     return {
         "rpm": rpm,
@@ -179,7 +179,7 @@ def on_message(client, userdata, msg):
 
 # ============================
 # Dados simulados da máquina 
-# ============================
+# ============================x
 def generate_machine_data():
     global sensor_values, shutdown
     global rssi, snr
@@ -247,29 +247,9 @@ def generate_machine_data():
         # Aplica limites físicos
         sensor_values["rpm"] = max(800, min(3000, sensor_values["rpm"]))
         
-        if config["coolant_temp_unit"] == "°C":
-            sensor_values["coolant_temp"] = max(70.0, min(130.0, sensor_values["coolant_temp"]))
-        else:
-            sensor_values["coolant_temp"] = max(158.0, min(266.0, sensor_values["coolant_temp"]))  # 70°C=158°F, 130°C=266°F
-        
-        if config["oil_pressure_unit"] == "bar":
-            sensor_values["oil_pressure"] = max(1.5, min(8.0, sensor_values["oil_pressure"]))
-        else:
-            sensor_values["oil_pressure"] = max(1.5 * BAR_TO_PSI, min(8.0 * BAR_TO_PSI, sensor_values["oil_pressure"]))
-        
-        if config["battery_potential_unit"] == "V":
-            sensor_values["battery_potential"] = max(10.0, min(14.0, sensor_values["battery_potential"]))
-        else:
-            sensor_values["battery_potential"] = max(10.0 * V_TO_MV, min(14.0 * V_TO_MV, sensor_values["battery_potential"]))
-        
-        if config["consumption_unit"] == "l/h":
-            sensor_values["consumption"] = max(1.0, min(50.0, sensor_values["consumption"]))
-        else:
-            sensor_values["consumption"] = max(1.0 * L_TO_GAL, min(50.0 * L_TO_GAL, sensor_values["consumption"]))
-
-    # Simulação incremental de RSSI/SNR
-    rssi = max(-120, min(-50, rssi + random.uniform(-3, 3)))
-    snr = max(-20, min(10, snr + random.uniform(-0.5, 0.5)))
+    # Simulação incremental de RSSI/SNR 
+    rssi += random.uniform(-3, 3)
+    snr += random.uniform(-0.5, 0.5)
     channel_rssi = rssi + random.uniform(-3, 3)
 
     # Payload Base64 
@@ -370,6 +350,69 @@ def main():
         sys.exit(1)
     
     client.loop_start()
+    
+#======================
+# enviar valores fixos para testar (usou-se a máquina M!)
+#======================
+    '''try:
+        for i in range(3):
+            if i < 2:
+                # Dados dentro dos limites
+                sensor_values = init_sensor_values(MACHINE_CODE)
+            else:
+        
+                sensor_values["oil_pressure"] = 200  # pressão acima do limite
+
+            decoded_payload = {
+                "rpm": round(sensor_values["rpm"], 1),
+                "coolant_temperature": round(sensor_values["coolant_temp"], 1),
+                "oil_pressure": round(sensor_values["oil_pressure"], 2),
+                "battery_potential": round(sensor_values["battery_potential"], 2),
+                "consumption": round(sensor_values["consumption"], 2),
+                "machine_type": MACHINE_CODE
+            }
+            frm_payload = base64.b64encode(json.dumps(decoded_payload).encode()).decode()
+            rssi_sim = round(rssi + random.uniform(-2, 2), 2)
+            snr_sim = round(snr + random.uniform(-0.5, 0.5), 2)
+
+            data = {
+                "end_device_ids": {
+                    "machine_id": MACHINE_ID,
+                    "application_id": GROUP_ID,
+                    "dev_eui": "70B3D57ED00347C5",
+                    "join_eui": "0000000000000000",
+                    "dev_addr": "260B1234"
+                },
+                "received_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                "uplink_message": {
+                    "f_port": 1,
+                    "f_cnt": random.randint(0, 9999),
+                    "frm_payload": frm_payload,
+                    "decoded_payload": decoded_payload,
+                    "rx_metadata": [{
+                        "gateway_id": "gateway-1",
+                        "rssi": rssi_sim,
+                        "snr": snr_sim,
+                        "channel_rssi": rssi_sim + random.uniform(-2, 2),
+                        "uplink_token": "TOKEN_VALUE"
+                    }],
+                    "settings": {
+                        "data_rate": {
+                            "modulation": "LORA",
+                            "bandwidth": 125000,
+                            "spreading_factor": 7
+                        },
+                        "frequency": "868300000",
+                        "timestamp": int(time.time())
+                    },
+                    "consumed_airtime": "0.061696s"
+                }
+            }
+
+            client.publish(TOPIC_UP, json.dumps(data))
+            print_published_data(data)
+            print(f"Dados publicados ({'normal' if i < 2 else 'FORA DO LIMITE'}) para {MACHINE_ID}")
+            time.sleep(UPDATE_TIME)'''
 
     try:
         while True:
