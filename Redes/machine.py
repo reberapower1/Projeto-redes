@@ -134,7 +134,7 @@ shutdown = False  # Define se a máquina está desligada
 # Funções MQTT 
 # ============================
 def on_connect(client, userdata, flags, rc, properties=None):
-    print(f"Ligao ao broker MQTT com o código {rc}")
+    print(f"Ligao ao broker MQTT com {rc}")
     client.subscribe(TOPIC_DOWN_ACTUATOR)
     client.subscribe(TOPIC_DOWN_ALERT)
 

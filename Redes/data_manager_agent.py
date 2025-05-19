@@ -13,10 +13,16 @@ MQTT_BROKER = "localhost"
 MQTT_PORT = 1883  
 
 # Tópicos MQTT 
-TOPIC_MACHINE = f"v3/{GROUP_ID}@ttn/devices/+/up"
+TOPIC_MACHINE_1 = f"v3/{GROUP_ID}@ttn/devices/M1/up"
+TOPIC_MACHINE_2 = f"v3/{GROUP_ID}@ttn/devices/M2/up"
+TOPIC_MACHINE_3 = f"v3/{GROUP_ID}@ttn/devices/M3/up"
+TOPIC_MACHINE_4 = f"v3/{GROUP_ID}@ttn/devices/M4/up"
+TOPIC_MACHINE_5 = f"v3/{GROUP_ID}@ttn/devices/M5/up"
+TOPIC_MACHINE_6 = f"v3/{GROUP_ID}@ttn/devices/M6/up"
+TOPIC_MACHINE_7 = f"v3/{GROUP_ID}@ttn/devices/M7/up"
+TOPIC_MACHINE_8 = f"v3/{GROUP_ID}@ttn/devices/M8/up"
 
 # Configurações
-GROUP_ID = "7"
 token =  "ifB8rGv5s_u6Wc_q4JmZGE8zQMba_8u-UfLLvTKeBMuofI3lrhaSH73m_QHFZhFmceiegWY6BohE0Cw49AaWBg=="
 org = "Projetos Redes"                    
 host = "https://eu-central-1-1.aws.cloud2.influxdata.com"  
@@ -146,7 +152,6 @@ def convert_to_a23x_units(machine_code, sensor_data):
     return converted_data
 
 def send_to_influx(machine_data):
-    """Versão otimizada para integrar com seu fluxo atual"""
     try:
         # Cria todos os pontos
         points = []
@@ -161,14 +166,15 @@ def send_to_influx(machine_data):
         .field("battery_potential_v", machine_data['battery_potential']) \
         .field("consumption_lh", machine_data['consumption']) \
         .time(datetime.now())
+        points.append(sensor_point)
 
         
         # Dados da rede
         signal_point = Point("network_metrics") \
             .tag("machine_id", machine_data['machine_id']) \
-            .field("rssi", machine_data['rssi']) \
-            .field("snr", machine_data['snr']) \
-            .field("channel_rssi", machine_data.get('channel_rssi', -100)) \
+            .field("rssi", float(machine_data['rssi'])) \
+            .field("snr", float(machine_data['snr'])) \
+            .field("channel_rssi", float(machine_data.get('channel_rssi', -100))) \
             .time(datetime.now())
         points.append(signal_point)
         
@@ -186,11 +192,22 @@ def send_to_influx(machine_data):
 # ============================
 def on_connect(client, userdata, flags, rc, properties=None):
     print(f"Ligao ao broker MQTT com o código {rc}")
-    client.subscribe(TOPIC_MACHINE)
-    print(f"Subscrito ao tópico: v3/{GROUP_ID}@ttn/devices/+/up")
+    try:
+        client.subscribe(TOPIC_MACHINE_1)
+        client.subscribe(TOPIC_MACHINE_2)
+        client.subscribe(TOPIC_MACHINE_3)
+        client.subscribe(TOPIC_MACHINE_4)
+        client.subscribe(TOPIC_MACHINE_5)
+        client.subscribe(TOPIC_MACHINE_6)
+        client.subscribe(TOPIC_MACHINE_7)
+        client.subscribe(TOPIC_MACHINE_8)
+        print("subscrito no tópicos")
+    except Exception as e:
+        print ("Falha ao subscrever os tópicos")
 
 def on_message(client, userdata, msg):
     try:
+        print("entrou na função on message")
         data = json.loads(msg.payload.decode())
         machine_id = data["end_device_ids"]["machine_id"]
         machine_code = MACHINE_ID_TO_CODE.get(machine_id)
@@ -235,10 +252,8 @@ def main():
         print(f"Falha na ligação MQTT: {e}")
         sys.exit(1)
 
-    mqtt_client.loop_start
-    
     try:
-        mqtt_client.loop_forever()
+        mqtt_client.loop_forever()  
     except KeyboardInterrupt:
         print("\nExecução interrompida...")
     finally:
