@@ -10,7 +10,8 @@ GROUP_ID = "22"
 MQTT_BROKER = "10.6.1.9"
 MQTT_PORT = 1883
 
-TOPIC_TO_MACHINE_MANAGER = f"{GROUP_ID}/machine_data"
+TOPIC_FROM_DATA_MANAGER = f"{GROUP_ID}/data_to_machine_manager"
+TOPIC_TO_DATA_MANAGER = f"{GROUP_ID}/commands_from_machine_manager"
 
 # ==========================
 # LÊ INTERVALOS DO FICHEIRO DE CONFIGURAÇÃO
@@ -28,7 +29,7 @@ def load_intervals():
                     "high": float(lines[0].split()[1]),
                     "unit": "rpm"
                 },
-                "coolant_temperature": {
+                "coolant_temp": {
                     "low": float(lines[1].split()[0]),
                     "high": float(lines[1].split()[1]),
                     "unit": "°C"
@@ -56,11 +57,11 @@ def load_intervals():
 intervals = load_intervals()
         
 # ==========================
-# VERIFICAÇÃO E COMANDO
+# VERIFICA SE OS VALORES ESTÃO CONFORME OS LIMITES DO FICHEIRO INTERVALS
 # ==========================
 
 def verificar_anomalias(sensor_data):
-    alertas = []
+    avisos = []
     comandos = []
 
     for sensor, valor in sensor_data.items():
@@ -71,9 +72,11 @@ def verificar_anomalias(sensor_data):
         lim = intervals[sensor]
         unidade = lim.get("unit", "")
 
+        #se estiver abaixo, o comando é para aumentar 
         if valor < lim["low"]:
             diferenca = lim["low"] - valor
-            alertas.append({
+            ajuste = round(diferenca)
+            avisos.append({
                 "parameter": sensor,
                 "value": f"{valor:.2f}{unidade}",
                 "status": "LOW",
@@ -83,14 +86,15 @@ def verificar_anomalias(sensor_data):
             comandos.append({
                 "sensor": sensor,
                 "action": "increase",
-                "value": valor,
-                "threshold": lim["low"],
+                "adjustment": ajuste,
                 "unit": unidade
             })
 
+        #se estiver alto, o comando é para baixar
         elif valor > lim["high"]:
             diferenca = valor - lim["high"]
-            alertas.append({
+            ajuste = -round(diferenca)  
+            avisos.append({
                 "parameter": sensor,
                 "value": f"{valor:.2f}{unidade}",
                 "status": "HIGH",
@@ -100,12 +104,11 @@ def verificar_anomalias(sensor_data):
             comandos.append({
                 "sensor": sensor,
                 "action": "reduce",
-                "value": valor,
-                "threshold": lim["high"],
+                "adjustment": ajuste, 
                 "unit": unidade
             })
 
-    return alertas, comandos
+    return avisos,comandos
 
 # ==========================
 # MQTT
@@ -118,8 +121,8 @@ def configurar_mqtt():
 
 def ligar_mqtt(client):
     client.connect(MQTT_BROKER, MQTT_PORT, 60)
-    client.subscribe(TOPIC_TO_MACHINE_MANAGER)
-    print(f"Subscrito no tópico: {TOPIC_TO_MACHINE_MANAGER}")
+    client.subscribe(TOPIC_FROM_DATA_MANAGER)
+    print(f"Subscrito no tópico: {TOPIC_TO_DATA_MANAGER}")
 
 def desligar_mqtt(client):
     client.disconnect()
@@ -131,41 +134,21 @@ def formatar_mensagem(machine_id, alertas=None, comandos=None):
         "timestamp": datetime.now().strftime("%d-%m-%Y %H:%M:%S")
     }
     
-    if len(alertas)!=0:
+    if alertas:
         mensagem["alerts"] = alertas
-        print("\nALERTA ALERTA")
-        for alerta in alertas:
-            print(f"{alerta['parameter']}: {alerta['value']} "
-                  f"({alerta['status']} - Limite: {alerta['threshold']}, "
-                  f"Desvio: {alerta['deviation']})")
     
-    if len(comandos):
+    if comandos:
         mensagem["commands"] = comandos
-        print("\nCOMANDOS:")
-        for comando in comandos:
-            print(f"Ajustar {comando['sensor']}: {comando['action'].upper()} "
-                  f"(Valor atual: {comando['value']:.2f}{comando['unit']}, "
-                  f"Limite: {comando['threshold']:.2f}{comando['unit']})")
     
     return mensagem
 
 def enviar_mensagem(client, mensagem):
     try:
         payload = json.dumps(mensagem)
-        client.publish(TOPIC_TO_MACHINE_MANAGER, payload)
-        print("\nMensagem enviada com sucesso!")
+        client.publish(TOPIC_TO_DATA_MANAGER, payload)
+        print("\nComando enviada com sucesso!")
     except Exception as e:
         print(f"\nErro ao enviar mensagem: {e}")
-
-def enviar_alerta(client, alerta):
-    payload = json.dumps(alerta)
-    client.publish(TOPIC_TO_MACHINE_MANAGER, payload)
-    print(f"Alerta enviado !!!: {payload}")
-
-def enviar_comando(client, comando):
-    payload = json.dumps(comando)
-    client.publish(TOPIC_TO_MACHINE_MANAGER, payload)
-    print(f"Comando enviado: {payload}")
 
 # ==========================
 # CALLBACK DE MENSAGENS
@@ -174,29 +157,40 @@ def enviar_comando(client, comando):
 def on_message(client, userdata, msg):
     try:
         data = json.loads(msg.payload.decode())
-        print(f"\nDados recebidos de {data.get('machine_id')}")
+        print("Dados recebidos: ", data)
+        print(f"\nDados recebidos através do data manager da máquina {data.get('machine_id')}")
 
         # Validação de campos
         required = ["group_id", "machine_id", "machine_code", "rpm", "oil_pressure", "coolant_temp",
                     "battery_potential", "consumption", "rssi", "snr", "channel_rssi", "timestamp"]
-
-        if not all(key in data for key in required):
-            print("\n[ERRO] Dados incompletos na mensagem recebida.")
+        
+        missing = [key for key in required if key not in data]
+        if missing:
+            print(f"\n[ERRO] Campos obrigatórios faltando: {missing}")
             return
+        
+        # Verifica valores None
+        for key in required:
+            if data.get(key) is None:
+                print(f"\n[ERRO] Campo {key} está None")
+                return
 
+        #retira os valores dos sensores da máquina
         sensor_data = {
             "rpm": data["rpm"],
-            "coolant_temperature": data["coolant_temp"],
+            "coolant_temp": data["coolant_temp"],
             "oil_pressure": data["oil_pressure"],
             "battery_potential": data["battery_potential"],
             "consumption": data["consumption"]
         }
 
-        # Verificar anomalias
-        alertas, comandos = verificar_anomalias(sensor_data)
+        # Verificar se estão dentro dos limites
+        avisos, comandos = verificar_anomalias(sensor_data)
 
-        if len(alertas)!=0 or len(comandos)!=0:
-            mensagem = formatar_mensagem(data["machine_id"], alertas, comandos)
+        #envia alerta ou comando dependendo da situação
+        if len(avisos)!=0 or len(comandos)!=0:
+            print("valore(s) fora dos limites")
+            mensagem = formatar_mensagem(data["machine_id"], avisos, comandos)
             enviar_mensagem(client, mensagem)
         else:
             print("\nTodos as variáveis dentro dos limites")

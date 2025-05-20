@@ -34,7 +34,7 @@ MQTT_PORT = 1883
 
 # Tópicos MQTT 
 TOPIC_UP = f"v3/{GROUP_ID}@ttn/devices/{MACHINE_ID}/up"
-TOPIC_DOWN_ACTUATOR = f"v3/{GROUP_ID}@ttn/devices/{MACHINE_ID}/down/push_actuator"
+TOPIC_DOWN_ACTUATOR = f"v3/{GROUP_ID}@ttn/devices/{MACHINE_ID}/down/push_machine"
 TOPIC_DOWN_ALERT = f"v3/{GROUP_ID}@ttn/devices/{MACHINE_ID}/down/push_alert"
 
 # ============================
@@ -130,6 +130,101 @@ def init_sensor_values(machine_code):
 sensor_values = init_sensor_values(MACHINE_CODE)
 shutdown = False  # Define se a máquina está desligada
 
+def process_alert_message(raw_payload):
+    global shutdown
+    
+    # Estrutura: [message_type, action_type, parameter, severity]
+    message_type = raw_payload[0]
+    parameter_byte = raw_payload[2]
+    severity_byte = raw_payload[3]
+    
+    #===============================
+    #associação aos vários parametros
+    #===============================
+    parameter_map = {
+        0x01: "rpm",
+        0x02: "coolant_temperature",
+        0x03: "oil_pressure",
+        0x04: "battery_potential",
+        0x05: "consumption"
+    }
+    
+    severity_map = {
+        0x01: "LOW",
+        0x02: "HIGH",
+        0x03: "CRITICAL"
+    }
+    
+    parameter = parameter_map.get(parameter_byte, "unknown")
+    severity = severity_map.get(severity_byte, "LOW")
+    
+    print(f"ALERTA: Parâmetro {parameter} em estado {severity}")
+    
+    if severity == "CRITICAL":
+        shutdown = True
+        print("ATENÇÃO: Desligamento de emergência ativado!")
+
+def process_actuator_message(decoded_payload):
+    global sensor_values
+    
+    try:
+        # Estrutura: [message_type, action_type, parameter, adjustment]
+        message_type = decoded_payload[0]
+        action_type = decoded_payload[1]
+        parameter_byte = decoded_payload[2]
+        adjustment = decoded_payload[3] if decoded_payload[3] <= 127 else decoded_payload[3] - 256
+        
+        parameter_map = {
+            0x01: "rpm",
+            0x02: "coolant_temperature",
+            0x03: "oil_pressure",
+            0x04: "battery_potential",
+            0x05: "consumption"
+        }
+        
+        parameter = parameter_map.get(parameter_byte, None)
+        
+        if not parameter:
+            print(f"Parâmetro desconhecido: {parameter_byte}")
+            return
+            
+        config = MACHINE_CONFIG[MACHINE_CODE]
+
+        print(f"A ajustar {parameter} em {adjustment} unidades")
+        
+        # Aplica o ajuste considerando as unidades
+        if parameter == "rpm":
+            sensor_values["rpm"] = sensor_values["rpm"] + adjustment
+            
+        elif parameter == "coolant_temperature":
+            if config["coolant_temp_unit"] == "°F":
+                # Converte ajuste para Fahrenheit se necessário
+                adjustment = adjustment * 1.8
+            sensor_values["coolant_temp"] += adjustment
+            
+        elif parameter == "oil_pressure":
+            if config["oil_pressure_unit"] == "bar":
+                # Converte ajuste para bar se necessário
+                adjustment = adjustment * 0.0689476
+            sensor_values["oil_pressure"] = sensor_values["oil_pressure"] + adjustment
+            
+        elif parameter == "battery_potential":
+            if config["battery_potential_unit"] == "mV":
+                # Converte ajuste para mV se necessário
+                adjustment = adjustment * 1000
+            sensor_values["battery_potential"] = sensor_values["battery_potential"] + adjustment
+            
+        elif parameter == "consumption":
+            if config["consumption_unit"] == "gal/h":
+                # Converte ajuste para galões se necessário
+                adjustment = adjustment * 0.264172
+            sensor_values["consumption"] =sensor_values["consumption"] + adjustment
+            
+        print(f"Novo valor de {parameter}: {sensor_values[parameter]}")
+        
+    except Exception as e:
+        print(f"Erro ao processar mensagem: {str(e)}")
+
 # ============================
 # Funções MQTT 
 # ============================
@@ -140,39 +235,24 @@ def on_connect(client, userdata, flags, rc, properties=None):
 
 def on_message(client, userdata, msg):
     global shutdown, sensor_values
-
+    
     print(f"Mensagem recebida no tópico {msg.topic}: {msg.payload.decode()}")
+    
     try:
+        # Decodifica a mensagem LoRaWAN
         payload = json.loads(msg.payload.decode())
-        command = payload.get("command", "")
-
-        if msg.topic.endswith("push_alert"):
-            if command == "shutdown":
-                print(" Alerta CRÍTICO recebido: a máquina vai-se desligar.")
-                shutdown = True
-
-        elif msg.topic.endswith("push_actuator"):
-            if command == "reduce_load":
-                print(" A carga da máquina vai diminuir...")
-                sensor_values["rpm"] = max(800, sensor_values["rpm"] - 200)
+        
+        if "downlinks" in payload:
+            downlink = payload["downlinks"][0]
+            raw_payload = base64.b64decode(downlink["frm_payload"])
+            print(raw_payload)
+            
+            # Processa conforme o tipo de mensagem
+            if msg.topic.endswith("push_alert"):
+                process_alert_message(raw_payload)
+            elif msg.topic.endswith("push_machine"):
+                process_actuator_message(raw_payload)
                 
-                # Reduz pressão do óleo 
-                if MACHINE_CONFIG[MACHINE_CODE]["oil_pressure_unit"] == "bar":
-                    sensor_values["oil_pressure"] = max(1.5, sensor_values["oil_pressure"] - 0.3)
-                else:
-                    sensor_values["oil_pressure"] = max(1.5 * BAR_TO_PSI, sensor_values["oil_pressure"] - (0.3 * BAR_TO_PSI))
-                
-                # Reduz temperatura
-                if MACHINE_CONFIG[MACHINE_CODE]["coolant_temp_unit"] == "°C":
-                    sensor_values["coolant_temp"] = max(70.0, sensor_values["coolant_temp"] - 0.5)
-                else:
-                    sensor_values["coolant_temp"] = max(158.0, sensor_values["coolant_temp"] - 0.9)  # 0.5°C ≈ 0.9°F
-                
-                # Reduz consumo
-                if MACHINE_CONFIG[MACHINE_CODE]["consumption_unit"] == "l/h":
-                    sensor_values["consumption"] = max(1.0, sensor_values["consumption"] - 1)
-                else:
-                    sensor_values["consumption"] = max(0.264172, sensor_values["consumption"] - (1 * L_TO_GAL))
     except Exception as e:
         print(f"Erro ao processar mensagem: {e}")
 

@@ -3,6 +3,7 @@ import paho.mqtt.client as mqtt
 import json
 from datetime import datetime
 from influxdb_client_3 import InfluxDBClient3, Point 
+import base64
 
 GROUP_ID = sys.argv[1]
 
@@ -12,7 +13,9 @@ GROUP_ID = sys.argv[1]
 MQTT_BROKER = "10.6.1.9"  
 MQTT_PORT = 1883  
 
+#=========================
 # Tópicos MQTT 
+#=========================
 TOPIC_MACHINE_1 = f"v3/{GROUP_ID}@ttn/devices/M1/up"
 TOPIC_MACHINE_2 = f"v3/{GROUP_ID}@ttn/devices/M2/up"
 TOPIC_MACHINE_3 = f"v3/{GROUP_ID}@ttn/devices/M3/up"
@@ -21,7 +24,38 @@ TOPIC_MACHINE_5 = f"v3/{GROUP_ID}@ttn/devices/M5/up"
 TOPIC_MACHINE_6 = f"v3/{GROUP_ID}@ttn/devices/M6/up"
 TOPIC_MACHINE_7 = f"v3/{GROUP_ID}@ttn/devices/M7/up"
 TOPIC_MACHINE_8 = f"v3/{GROUP_ID}@ttn/devices/M8/up"
-TOPIC_TO_MACHINE_MANAGER = f"{GROUP_ID}/machine_data"
+
+TOPIC_TO_MACHINE_MANAGER = f"{GROUP_ID}/data_to_machine_manager"
+TOPIC_FROM_MACHINE_MANAGER = f"{GROUP_ID}/commands_from_machine_manager"
+
+TOPIC_DOWN_M1 = f"v3/{GROUP_ID}@ttn/devices/M1/down/push_machine"
+TOPIC_DOWN_M2 = f"v3/{GROUP_ID}@ttn/devices/M2/down/push_machine"
+TOPIC_DOWN_M3 = f"v3/{GROUP_ID}@ttn/devices/M3/down/push_machine"
+TOPIC_DOWN_M4 = f"v3/{GROUP_ID}@ttn/devices/M4/down/push_machine"
+TOPIC_DOWN_M5 = f"v3/{GROUP_ID}@ttn/devices/M5/down/push_machine"
+TOPIC_DOWN_M6 = f"v3/{GROUP_ID}@ttn/devices/M6/down/push_machine"
+TOPIC_DOWN_M7 = f"v3/{GROUP_ID}@ttn/devices/M7/down/push_machine"
+TOPIC_DOWN_M8 = f"v3/{GROUP_ID}@ttn/devices/M8/down/push_machine"
+
+TOPIC_ALERT_M1 = f"v3/{GROUP_ID}@ttn/devices/M1/down/push_alert"
+TOPIC_ALERT_M2 = f"v3/{GROUP_ID}@ttn/devices/M2/down/push_alert"
+TOPIC_ALERT_M3 = f"v3/{GROUP_ID}@ttn/devices/M3/down/push_alert"
+TOPIC_ALERT_M4 = f"v3/{GROUP_ID}@ttn/devices/M4/down/push_alert"
+TOPIC_ALERT_M5 = f"v3/{GROUP_ID}@ttn/devices/M5/down/push_alert"
+TOPIC_ALERT_M6 = f"v3/{GROUP_ID}@ttn/devices/M6/down/push_alert"
+TOPIC_ALERT_M7 = f"v3/{GROUP_ID}@ttn/devices/M7/down/push_alert"
+TOPIC_ALERT_M8 = f"v3/{GROUP_ID}@ttn/devices/M8/down/push_alert"
+
+MACHINE_DOWNLINKS = {
+    "M1": TOPIC_DOWN_M1,
+    "M2": TOPIC_DOWN_M2,
+    "M3": TOPIC_DOWN_M3,
+    "M4": TOPIC_DOWN_M4,
+    "M5": TOPIC_DOWN_M5,
+    "M6": TOPIC_DOWN_M6,
+    "M7": TOPIC_DOWN_M7,
+    "M8": TOPIC_DOWN_M8
+}
 
 
 # Configurações
@@ -65,6 +99,17 @@ CONVERSION_FACTORS = {
     "v_to_mv": 1000
 }
 
+PARAMETER_BYTES = {
+    "rpm": 0x01,
+    "coolant_temperature": 0x02,
+    "oil_pressure": 0x03,
+    "battery_potential": 0x04,
+    "consumption": 0x05
+}
+
+#============================================================
+#Função que converte para as unidades de medida da máquina M1
+#=============================================================
 def convert_to_a23x_units(machine_code, sensor_data):
     converted_data = {}
     
@@ -129,7 +174,6 @@ def convert_to_a23x_units(machine_code, sensor_data):
         converted_data["oil_pressure"] = oil_pressure * CONVERSION_FACTORS["bar_to_psi"]
     else:
         converted_data["oil_pressure"] = oil_pressure
-
     
     # Conversão de temperatura para °C 
     coolant_temp = sensor_data.get("coolant_temperature", 0)
@@ -154,9 +198,9 @@ def convert_to_a23x_units(machine_code, sensor_data):
     
     return converted_data
 
-#==================
+#=======================================================
 #Função para enviar os dados para a base de dados Influx
-# #================
+# #=====================================================
 def send_to_influx(machine_data):
     try:
         # Cria todos os pontos
@@ -174,7 +218,6 @@ def send_to_influx(machine_data):
         .time(datetime.now())
         points.append(sensor_point)
 
-        
         # Dados da rede
         signal_point = Point("network_metrics") \
             .tag("machine_id", machine_data['machine_id']) \
@@ -192,10 +235,25 @@ def send_to_influx(machine_data):
     except Exception as e:
         print(f"Erro ao enviar dados: {str(e)}")
         return False
+    
+#Processa comandos recebidos do Machine Manager
+def process_command(client, machine_id, command):
+    try:
+        parameter = command["sensor"]
+        value = int(command["adjustment"])
+        
+        if parameter not in PARAMETER_BYTES:
+            raise ValueError(f"Parâmetro inválido: {parameter}")
+        
+        send_machine_command(client, machine_id, parameter, value)
+        
+    except Exception as e:
+        print(f"Erro ao processar comando: {e}")
+        print(f"Comando problemático: {command}") 
 
-#===============
+#========================================================
 #Função para enviar os dados para o machine manager agent
-#===============
+#========================================================
 def send_to_machine_data_manager(client, machine_data):
     try:
         topic = TOPIC_TO_MACHINE_MANAGER  
@@ -213,59 +271,61 @@ def send_to_machine_data_manager(client, machine_data):
             "channel_rssi": machine_data["channel_rssi"],
             "timestamp": datetime.now().strftime("%d-%m-%Y %H:%M:%S")
         } 
+
         client.publish(topic, json.dumps(payload), qos=1)
-        print(f"Dados enviados para o Machine Data Manager via tópico: {topic}")
+        print(f"Dados enviados para o Machine Data Manager {payload}")
     except Exception as e:
         print(f"Erro ao enviar para o Machine Data Manager: {e}")
 
-def send_machine_command(client, machine_id, command_type, parameter, value):
+#================================
+#Criar os comandos para a máquina
+#================================
+def build_control_message(parameter: str, adjustment: int) -> str:
+    # Verificação se o parâmetro é válido
+    if parameter not in PARAMETER_BYTES:
+        raise ValueError(f"Parâmetro inválido: {parameter}")
+    
+    # Verificação de signed value
+    if not (-128 <= adjustment <= 127):
+        raise ValueError("O valor de ajuste deve estar entre -128 e 127.")
+    
+    message_type = 0x01  
+    action_type = 0x01   # Modificar parâmetro
+    parameter_byte = PARAMETER_BYTES[parameter]
+    adjustment_byte = adjustment & 0xFF  # Converter para byte 
+
+    # Construir bytes da mensagem
+    byte_array = bytes([message_type, action_type, parameter_byte, adjustment_byte])
+
+    # Codificar em base64
+    frm_payload = base64.b64encode(byte_array).decode('utf-8')
+    return frm_payload
+
+#===============================
+#Enviar comando para a máquina
+#===============================
+def send_machine_command(client, machine_id, parameter, adjustment):
     try:
-        PARAMETER_BYTES = {
-            "rpm": 0x01,
-            "coolant_temperature": 0x02,
-            "oil_pressure": 0x03,
-            "battery_potential":0x04,
-            "consumption":0x05
-        }
-
-        if command_type == "control":
-            message_type = 0x01
-            action_type = 0x01  # "Modify Parameter"
-            parameter_byte = PARAMETER_BYTES.get(parameter, 0x01)
-            adjustment_byte = value if isinstance(value, int) else int(value)  # Valor assinado (-128 a +127)
-            payload_bytes = [message_type, action_type, parameter_byte, adjustment_byte]
+        # Verifica se a máquina existe no dicionario
+        if machine_id not in MACHINE_DOWNLINKS:
+            raise ValueError(f"Máquina {machine_id} não configurada para downlinks")
         
-        elif command_type == "alert":
-            message_type = 0x02
-            action_type = 0x01  # "Stop Machine"
-            reason_byte = value if isinstance(value, int) else int(value)  # Código de razão
-            payload_bytes = [message_type, action_type, reason_byte]
-        
-        else:
-            raise ValueError("Tipo de comando inválido. Use 'control' ou 'alert'.")
-
-        # Converte os bytes para uma string hex (ex: "0x01 0x01 0x01 0xFA")
-        hex_payload = " ".join([f"0x{b:02X}" for b in payload_bytes])
-
-        # Estrutura da mensagem LoRaWAN
+        frm_payload = build_control_message(parameter, adjustment)
         downlink_msg = {
             "downlinks": [{
-                "frm_payload": hex_payload,
-                "f_port": 10, 
+                "frm_payload": frm_payload,
+                "f_port": 10,
                 "priority": "NORMAL"
             }]
         }
-
-        # Publica no tópico correto
-        topic = f"v3/{GROUP_ID}@ttn/devices/{machine_id}/down/push_machine"
-        if command_type == "alert":
-            topic = f"v3/{GROUP_ID}@ttn/devices/{machine_id}/down/push_alert"
-
+        
+        # Obtém o tópico específico para esta máquina
+        topic = MACHINE_DOWNLINKS[machine_id]
         client.publish(topic, json.dumps(downlink_msg))
-        print(f"Comando {command_type} enviado para {machine_id}: {hex_payload}")
-
+        print(f"Comando enviado para {machine_id} no tópico: {topic}")
+        
     except Exception as e:
-        print(f"Erro ao enviar comando para a máquina: {e}")
+        print(f"Erro ao enviar comando para {machine_id}: {e}")
 
 # ============================
 # Funções MQTT 
@@ -281,43 +341,51 @@ def on_connect(client, userdata, flags, rc, properties=None):
         client.subscribe(TOPIC_MACHINE_6)
         client.subscribe(TOPIC_MACHINE_7)
         client.subscribe(TOPIC_MACHINE_8)
+        client.subscribe(TOPIC_FROM_MACHINE_MANAGER)
         print("subscrito no tópicos")
     except Exception as e:
         print ("Falha ao subscrever os tópicos")
 
 def on_message(client, userdata, msg):
     try:
-        print("entrou na função on message")
         data = json.loads(msg.payload.decode())
-        machine_id = data["end_device_ids"]["machine_id"]
-        machine_code = MACHINE_ID_TO_CODE.get(machine_id)
         
-        if not machine_code:
-            print(f"Erro: Machine ID {machine_id} não encontrado")
-            return
-        
-        print("recebi dados da máquina", machine_id)
+        if "end_device_ids" in data:  # Mensagem de dados da máquina
+            machine_id = data["end_device_ids"]["machine_id"]
+            machine_code = MACHINE_ID_TO_CODE.get(machine_id)
+            
+            if not machine_code:
+                print(f"Erro: Machine ID {machine_id} não encontrado")
+                return
+            
+            print("recebi dados da máquina", machine_id)
 
-        sensor_data = data["uplink_message"]["decoded_payload"]
-        standardized_data = convert_to_a23x_units(machine_code, sensor_data)
-        
-        influx_payload = {
-            'machine_id': machine_id,
-            'machine_code': machine_code,
-            'rpm': standardized_data["rpm"],
-            'oil_pressure': standardized_data["oil_pressure"],
-            'coolant_temp': standardized_data["coolant_temp"],
-            'battery_potential': standardized_data["battery_potential"],
-            'consumption': standardized_data["consumption"],
-            'rssi': data["uplink_message"]["rx_metadata"][0]["rssi"],
-            'snr': data["uplink_message"]["rx_metadata"][0]["snr"],
-            'channel_rssi': data["uplink_message"]["rx_metadata"][0].get("channel_rssi", -100)
-        }
+            sensor_data = data["uplink_message"]["decoded_payload"]
+            standardized_data = convert_to_a23x_units(machine_code, sensor_data)
+            
+            influx_payload = {
+                'machine_id': machine_id,
+                'machine_code': machine_code,
+                'rpm': standardized_data["rpm"],
+                'oil_pressure': standardized_data["oil_pressure"],
+                'coolant_temp': standardized_data["coolant_temp"],
+                'battery_potential': standardized_data["battery_potential"],
+                'consumption': standardized_data["consumption"],
+                'rssi': data["uplink_message"]["rx_metadata"][0]["rssi"],
+                'snr': data["uplink_message"]["rx_metadata"][0]["snr"],
+                'channel_rssi': data["uplink_message"]["rx_metadata"][0].get("channel_rssi", -100)
+            }
 
-        if not send_to_influx(influx_payload):
-            print("Falha ao enviar dados para InfluxDB")
-        # Enviar para o Machine Data Manager
-        send_to_machine_data_manager(mqtt_client, influx_payload)
+            if not send_to_influx(influx_payload):
+                print("Falha ao enviar dados para InfluxDB")
+            
+            send_to_machine_data_manager(mqtt_client, influx_payload)
+
+        elif msg.topic == TOPIC_FROM_MACHINE_MANAGER:
+            if "commands" in data:
+                for cmd in data["commands"]:
+                    process_command(client, data["machine_id"], cmd)
+
     except Exception as e:
         print(f"Erro ao processar mensagem: {e}")
     
