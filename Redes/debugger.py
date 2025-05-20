@@ -10,7 +10,9 @@ GROUP_ID = "22"
 # Tópicos para subscrever 
 TOPICS = [
     f"{GROUP_ID}/#",       
-    f"v3/{GROUP_ID}@ttn/#",   
+    f"v3/{GROUP_ID}@ttn/#", 
+    f"{GROUP_ID}/data_to_machine_manager"
+    f"{GROUP_ID}/commands_from_machine_manager"  
 ]
 
 # Função chamada quando uma mensagem é recebida

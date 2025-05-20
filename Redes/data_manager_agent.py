@@ -427,7 +427,7 @@ def main():
         sys.exit(1)
 
     try:
-        mqtt_client.loop_forever()  
+        mqtt_client.loop_forever()   
     except KeyboardInterrupt:
         print("\nExecução interrompida...")
     finally:
