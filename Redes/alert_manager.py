@@ -21,12 +21,12 @@ try:
             print(f"[AM] Recebido de {addr}: {message}")
 
             try:
-                parsed = json.loads(message)
+                payload = json.loads(message)
                 
                 # Atualizar o dicionário global com parâmetros fora do limite
-                if "alerts" in parsed:
+                if "alerts" in payload:
                     alert_params.clear()  # limpar alertas anteriores para esta mensagem
-                    for alert in parsed["alerts"]:
+                    for alert in payload["alerts"]:
                         param = alert.get("parameter")
                         status = alert.get("status")
                         if status == "HIGH":
@@ -39,9 +39,9 @@ try:
                     else:
                         print(f"[AM] Estado normal. Parâmetros fora do limite: {len(alert_params)}")
                 
-                if "commands" in parsed:
+                if "commands" in payload:
                     print("[AM] Comandos recebidos:")
-                    for cmd in parsed["commands"]:
+                    for cmd in payload["commands"]:
                         print(f"  - Sensor: {cmd.get('sensor')}, Ação: {cmd.get('action')}, Ajuste: {cmd.get('adjustment')} {cmd.get('unit')}")
 
             except json.JSONDecodeError:

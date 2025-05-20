@@ -4,6 +4,9 @@ import json
 from datetime import datetime
 from influxdb_client_3 import InfluxDBClient3, Point 
 import base64
+import threading
+import socket
+
 
 GROUP_ID = sys.argv[1]
 
@@ -412,6 +415,30 @@ def on_message(client, userdata, msg):
 
     except Exception as e:
         print(f"Erro ao processar mensagem: {e}")
+
+def udp_listener_for_alerts(mqtt_client):
+    udp_host = "localhost"
+    udp_port = 10000  
+
+    udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp_sock.bind((udp_host, udp_port))
+    print(f"[DM] a ouvir alertas do Alert Manager em {udp_host}:{udp_port}")
+
+    while True:
+        data, addr = udp_sock.recvfrom(2048)
+        try:
+            message = data.decode('utf-8')
+            print(f"[DM] Alerta crítico recebido: {message}")
+            parsed = json.loads(message)
+            
+            # Enviar comando via MQTT
+            if "machine_id" in parsed and "commands" in parsed:
+                for cmd in parsed["commands"]:
+                    process_command(mqtt_client, parsed["machine_id"], cmd)
+
+        except Exception as e:
+            print(f"[DM] Erro ao processar alerta crítico: {e}")
+
     
 def main():
     global mqtt_client
