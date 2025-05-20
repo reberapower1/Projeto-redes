@@ -245,7 +245,11 @@ def process_command(client, machine_id, command):
         if parameter not in PARAMETER_BYTES:
             raise ValueError(f"Parâmetro inválido: {parameter}")
         
-        send_machine_command(client, machine_id, parameter, value)
+        comandos_fragmentados = fragmentar_ajuste(parameter, value, TARGET_UNITS.get(parameter, ""))
+        for comando in comandos_fragmentados:
+            ajuste = int(round(comando["adjustment"]))
+            send_machine_command(client, machine_id, comando["sensor"], ajuste)
+
         
     except Exception as e:
         print(f"Erro ao processar comando: {e}")
@@ -304,6 +308,26 @@ def build_control_message(parameter: str, adjustment: int) -> str:
 #===============================
 #Enviar comando para a máquina
 #===============================
+def fragmentar_ajuste(sensor, ajuste_total, unidade):
+    comandos = []
+    limite = 1.27
+    passo = limite if ajuste_total > 0 else -limite
+    atual = 0
+
+    while abs(ajuste_total - atual) > 0.01:
+        delta = passo
+        if abs(ajuste_total - atual) < abs(passo):
+            delta = ajuste_total - atual
+        comandos.append({
+            "sensor": sensor,
+            "action": "increase" if delta > 0 else "reduce",
+            "adjustment": delta,
+            "unit": unidade
+        })
+        atual += delta
+
+    return comandos
+
 def send_machine_command(client, machine_id, parameter, adjustment):
     try:
         # Verifica se a máquina existe no dicionario
