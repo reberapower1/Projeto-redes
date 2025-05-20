@@ -143,7 +143,7 @@ def process_alert_message(raw_payload):
     #===============================
     parameter_map = {
         0x01: "rpm",
-        0x02: "coolant_temperature",
+        0x02: "coolant_temp",
         0x03: "oil_pressure",
         0x04: "battery_potential",
         0x05: "consumption"
@@ -173,6 +173,7 @@ def process_actuator_message(decoded_payload):
         action_type = decoded_payload[1]
         parameter_byte = decoded_payload[2]
         adjustment = decoded_payload[3] if decoded_payload[3] <= 127 else decoded_payload[3] - 256
+        adjustment = adjustment / 100.0
         
         parameter_map = {
             0x01: "rpm",
@@ -189,8 +190,6 @@ def process_actuator_message(decoded_payload):
             return
             
         config = MACHINE_CONFIG[MACHINE_CODE]
-
-        print(f"A ajustar {parameter} em {adjustment} unidades")
         
         # Aplica o ajuste considerando as unidades
         if parameter == "rpm":
@@ -219,7 +218,8 @@ def process_actuator_message(decoded_payload):
                 # Converte ajuste para galões se necessário
                 adjustment = adjustment * 0.264172
             sensor_values["consumption"] =sensor_values["consumption"] + adjustment
-            
+
+        print(f"A ajustar {parameter} em {adjustment} unidades")
         print(f"Novo valor de {parameter}: {sensor_values[parameter]}")
         
     except Exception as e:
@@ -268,7 +268,7 @@ def generate_machine_data():
 
     # Se está em estado de shutdown, convergir valores para 0
     if shutdown:
-        sensor_values["rpm"] = max(0, sensor_values["rpm"] - 300)
+        sensor_values["rpm"] = sensor_values["rpm"] - 300
         
         # Reduz consumo
         if config["consumption_unit"] == "l/h":
@@ -323,9 +323,6 @@ def generate_machine_data():
             sensor_values["consumption"] += random.uniform(-1, 1)
         else:
             sensor_values["consumption"] += random.uniform(-1 * L_TO_GAL, 1 * L_TO_GAL)
-
-        # Aplica limites físicos
-        sensor_values["rpm"] = max(800, min(3000, sensor_values["rpm"]))
         
     # Simulação incremental de RSSI/SNR 
     rssi += random.uniform(-3, 3)

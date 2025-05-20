@@ -74,14 +74,13 @@ def verificar_anomalias(sensor_data):
 
         #se estiver abaixo, o comando é para aumentar 
         if valor < lim["low"]:
-            diferenca = lim["low"] - valor
-            ajuste = round(diferenca)
+            ajuste = lim["low"] - valor
             avisos.append({
                 "parameter": sensor,
                 "value": f"{valor:.2f}{unidade}",
                 "status": "LOW",
                 "threshold": f"{lim['low']:.2f}{unidade}",
-                "deviation": f"{diferenca:.2f}{unidade} abaixo"
+                "deviation": f"{ajuste:.2f}{unidade} abaixo"
             })
             comandos.append({
                 "sensor": sensor,
@@ -92,19 +91,18 @@ def verificar_anomalias(sensor_data):
 
         #se estiver alto, o comando é para baixar
         elif valor > lim["high"]:
-            diferenca = valor - lim["high"]
-            ajuste = -round(diferenca)  
+            ajuste = valor - lim["high"]
             avisos.append({
                 "parameter": sensor,
                 "value": f"{valor:.2f}{unidade}",
                 "status": "HIGH",
                 "threshold": f"{lim['high']:.2f}{unidade}",
-                "deviation": f"{diferenca:.2f}{unidade} acima"
+                "deviation": f"{ajuste:.2f}{unidade} acima"
             })
             comandos.append({
                 "sensor": sensor,
                 "action": "reduce",
-                "adjustment": ajuste, 
+                "adjustment": -ajuste, 
                 "unit": unidade
             })
 

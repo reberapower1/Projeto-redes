@@ -101,7 +101,7 @@ CONVERSION_FACTORS = {
 
 PARAMETER_BYTES = {
     "rpm": 0x01,
-    "coolant_temperature": 0x02,
+    "coolant_temp": 0x02,
     "oil_pressure": 0x03,
     "battery_potential": 0x04,
     "consumption": 0x05
